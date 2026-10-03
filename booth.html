@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>출석 QR 부스</title>
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="common.css">
+<style>
+  /* 부스 태블릿 전용: QR 을 화면 가득 */
+  #show { min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+          justify-content: center; padding: 24px 16px; text-align: center; background: #fff; }
+  #show h1 { font-size: clamp(1.4rem, 4vw, 2.4rem); }
+  #qr { width: min(78vmin, 560px); aspect-ratio: 1; margin: 18px 0 12px; }
+  #qr svg { width: 100%; height: 100%; display: block; }
+  #clock { font-size: clamp(1.6rem, 5vw, 2.8rem); font-weight: 800; font-variant-numeric: tabular-nums; }
+  .bar { width: min(78vmin, 560px); height: 8px; background: #e9f0fa; border-radius: 4px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--primary); width: 100%; }
+  .guide { color: var(--text-dim); margin: 12px 0 0; font-size: clamp(.95rem, 2.2vw, 1.2rem); }
+  #net { font-size: .85rem; margin-top: 8px; color: var(--text-dim); }
+  #net.bad { color: var(--err); font-weight: 700; }
+  #settings { position: fixed; right: 12px; bottom: 12px; width: auto; padding: 8px 12px;
+              font-size: .85rem; opacity: .5; }
+  code { background: var(--brand-soft); padding: 2px 6px; border-radius: 6px; word-break: break-all; }
+</style>
+</head>
+<body>
+
+<!-- 1) 설정 화면: 담당자가 행사 시작 전에 한 번 입력 -->
+<main id="setup" class="wrap">
+  <div class="card">
+    <h1>출석 QR 부스 설정</h1>
+    <p class="sub">행사장 부스에 둘 태블릿·노트북에서 여는 화면입니다. 구글 시트 「행사」 탭의 값을 넣으세요.</p>
+    <label for="eventId">행사ID</label>
+    <input id="eventId" autocomplete="off" placeholder="예: EVAB12CD">
+    <label for="secret">부스키</label>
+    <input id="secret" type="password" autocomplete="off" placeholder="시트의 부스키(근무자에게 알려 주지 마세요)">
+    <p class="hint">부스키는 이 기기에만 저장되며 QR 에는 들어가지 않습니다.</p>
+    <div style="margin-top:16px"><button id="start">QR 띄우기</button></div>
+    <div id="setupMsg" class="msg hidden"></div>
+  </div>
+  <div class="card">
+    <h1 style="font-size:1.05rem">행사장 좌표 확인</h1>
+    <p class="sub">부스 자리에서 누르면 이 기기의 GPS 좌표가 나옵니다. 시트의 위도·경도 칸에 붙여 넣으세요.</p>
+    <div style="margin-top:12px"><button id="locBtn" class="ghost">이 자리 좌표 보기</button></div>
+    <p id="locOut" class="hint"></p>
+  </div>
+</main>
+
+<!-- 2) QR 화면 -->
+<section id="show" class="hidden">
+  <h1 id="evName"></h1>
+  <div id="clock"></div>
+  <div id="qr" aria-label="출석 QR 코드"></div>
+  <div class="bar"><i id="barFill"></i></div>
+  <p class="guide">휴대폰 <b>기본 카메라</b>로 QR을 비추고 뜨는 링크를 누르세요.<br>
+     QR은 <b id="slotSec">30</b>초마다 바뀌며, <b>사진·캡처로는 출석되지 않습니다.</b></p>
+  <div id="net"></div>
+  <button id="settings" class="ghost">설정</button>
+</section>
+
+<script src="vendor/qrcode.js"></script>
+<script src="config.js"></script>
+<script>
+(function () {
+  'use strict';
+  var API = (window.ATTENDANCE_CONFIG || {}).API_URL;
+  var KEY = 'attendance.booth';
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { eventId: '', secret: '', name: '', slotSeconds: 30, offset: 0, lastSlot: null, timer: null, syncTimer: null };
+
+  function store(v) { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch (e) {} }
+  function load() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } }
+  function msg(el, text, kind) { el.textContent = text; el.className = 'msg ' + kind; }
+
+  // ── 토큰: Code.gs 의 makeToken_ 과 반드시 같은 식 ──
+  function b64url(buf) {
+    var s = '', bytes = new Uint8Array(buf);
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_');
+  }
+  var keyCache = {};
+  function hmacKey(secret) {
+    if (!keyCache[secret]) {
+      keyCache[secret] = crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
+        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    }
+    return keyCache[secret];
+  }
+  function makeToken(secret, eventId, slot) {
+    return hmacKey(secret).then(function (k) {
+      return crypto.subtle.sign('HMAC', k, new TextEncoder().encode(eventId + '.' + slot));
+    }).then(function (sig) { return b64url(sig).substring(0, 16); });
+  }
+
+  function serverNow() { return Date.now() + state.offset; }
+
+  // 부스 시계를 서버 시계에 맞춘다(태블릿 시계가 틀려도 토큰이 맞도록).
+  function syncTime() {
+    var t0 = Date.now();
+    return fetch(API + '?action=time').then(function (r) { return r.json(); }).then(function (d) {
+      var t1 = Date.now();
+      state.offset = d.now - (t0 + t1) / 2;
+      state.slotSeconds = d.slotSeconds || state.slotSeconds;
+      $('net').textContent = '서버 시각 동기화됨';
+      $('net').className = '';
+    }).catch(function () {
+      $('net').textContent = '서버 연결 안 됨 — QR은 계속 바뀌지만, 근무자 휴대폰은 인터넷이 되어야 출석됩니다.';
+      $('net').className = 'bad';
+    });
+  }
+
+  function render() {
+    var now = serverNow();
+    var slotMs = state.slotSeconds * 1000;
+    var slot = Math.floor(now / slotMs);
+    var left = slotMs - (now % slotMs);
+    $('barFill').style.width = (left / slotMs * 100).toFixed(1) + '%';
+    $('clock').textContent = new Date(now).toLocaleTimeString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' });
+    if (slot === state.lastSlot) return;
+    state.lastSlot = slot;
+    makeToken(state.secret, state.eventId, slot).then(function (token) {
+      var url = new URL('checkin.html', location.href);
+      url.search = '?e=' + encodeURIComponent(state.eventId) + '&t=' + token;
+      var qr = qrcode(0, 'M');
+      qr.addData(url.href);
+      qr.make();
+      $('qr').innerHTML = qr.createSvgTag({ cellSize: 8, margin: 2, scalable: true });
+    });
+  }
+
+  var wakeLock = null;
+  function keepAwake() {
+    if (!('wakeLock' in navigator)) return;
+    navigator.wakeLock.request('screen').then(function (l) { wakeLock = l; }).catch(function () {});
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && !$('show').classList.contains('hidden')) keepAwake();
+  });
+
+  function showQr() {
+    $('setup').classList.add('hidden');
+    $('show').classList.remove('hidden');
+    $('evName').textContent = state.name || state.eventId;
+    $('slotSec').textContent = state.slotSeconds;
+    state.lastSlot = null;
+    render();
+    clearInterval(state.timer);
+    state.timer = setInterval(render, 250);
+    clearInterval(state.syncTimer);
+    state.syncTimer = setInterval(syncTime, 10 * 60 * 1000);
+    keepAwake();
+  }
+
+  function start() {
+    var out = $('setupMsg');
+    if (!API) return msg(out, 'config.js 의 API_URL 이 비어 있습니다. README 3단계를 먼저 하세요.', 'err');
+    if (!window.isSecureContext || !window.crypto || !crypto.subtle) {
+      return msg(out, 'https 주소(또는 localhost)에서 열어야 합니다.', 'err');
+    }
+    state.eventId = $('eventId').value.trim();
+    state.secret = $('secret').value.trim();
+    if (!state.eventId || !state.secret) return msg(out, '행사ID와 부스키를 입력하세요.', 'err');
+    msg(out, '확인 중…', 'info');
+    $('start').disabled = true;
+    syncTime().then(function () {
+      var slot = Math.floor(serverNow() / 1000 / state.slotSeconds);
+      return makeToken(state.secret, state.eventId, slot);
+    }).then(function (token) {
+      return fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'boothcheck', eventId: state.eventId, token: token })
+      }).then(function (r) { return r.json(); });
+    }).then(function (d) {
+      if (!d.ok) throw new Error(d.message);
+      state.name = d.name;
+      state.slotSeconds = d.slotSeconds || state.slotSeconds;
+      store({ eventId: state.eventId, secret: state.secret });
+      showQr();
+    }).catch(function (e) {
+      msg(out, e.message || '서버에 연결할 수 없습니다.', 'err');
+    }).then(function () { $('start').disabled = false; });
+  }
+
+  $('start').addEventListener('click', start);
+  $('settings').addEventListener('click', function () {
+    if (!confirm('QR 화면을 닫고 설정으로 돌아갈까요?')) return;
+    clearInterval(state.timer);
+    clearInterval(state.syncTimer);
+    if (wakeLock) wakeLock.release().catch(function () {});
+    $('show').classList.add('hidden');
+    $('setup').classList.remove('hidden');
+  });
+  $('locBtn').addEventListener('click', function () {
+    var out = $('locOut');
+    out.textContent = '위치 확인 중…';
+    navigator.geolocation.getCurrentPosition(function (p) {
+      out.innerHTML = '위도 <code>' + p.coords.latitude.toFixed(6) + '</code> 경도 <code>' +
+        p.coords.longitude.toFixed(6) + '</code> (오차 약 ' + Math.round(p.coords.accuracy) + 'm)';
+    }, function (e) { out.textContent = '위치를 가져오지 못했습니다: ' + e.message; },
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  });
+
+  var saved = load();
+  if (saved.eventId) $('eventId').value = saved.eventId;
+  if (saved.secret) $('secret').value = saved.secret;
+})();
+</script>
+</body>
+</html>

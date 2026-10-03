@@ -1,0 +1,10 @@
+/* Pretendard Variable — 내부망/오프라인에서도 동작하도록 CDN 대신 로컬 호스팅한다.
+   원본 사이트는 jsdelivr 의 dynamic-subset(woff2 92개 분할)을 썼지만, 내부망에서는
+   외부 요청이 막히므로 통합 가변 폰트 1개(약 2MB)를 직접 담아 둔다. */
+@font-face {
+  font-family: "Pretendard Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 45 920;
+  src: url("fonts/PretendardVariable.woff2") format("woff2-variations");
+}

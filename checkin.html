@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>근무자 출석</title>
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="common.css">
+<style>
+  .gps { display: flex; align-items: center; gap: 8px; font-size: .92rem; margin-top: 14px; color: var(--text-dim); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #c7c7c7; flex: none; }
+  .dot.ok { background: var(--ok); }
+  .dot.err { background: var(--err); }
+  .result { text-align: center; padding: 28px 20px; }
+  .result .big { font-size: 2rem; font-weight: 800; margin: 6px 0; }
+  .result.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+  .result.err { background: var(--err-soft); color: var(--err); border-color: transparent; }
+  .me { font-weight: 700; }
+  .linkish { background: none; border: 0; color: var(--primary); width: auto; padding: 0; font-size: .85rem;
+             font-weight: 600; text-decoration: underline; }
+  .linkish:hover { background: none; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div class="card">
+    <h1 id="evName">근무자 출석</h1>
+    <p class="sub" id="evSub">행사장 부스의 QR을 스캔해 들어온 화면입니다.</p>
+  </div>
+
+  <!-- QR 없이 들어온 경우 -->
+  <div id="noToken" class="card hidden">
+    <div class="msg err" style="margin:0">행사장 부스의 QR을 휴대폰 카메라로 스캔해 주세요.<br>이 주소를 직접 열거나 전달받은 링크로는 출석할 수 없습니다.</div>
+  </div>
+
+  <!-- 출석 입력 -->
+  <div id="form" class="card hidden">
+    <div id="profileView" class="hidden">
+      <p style="margin:0"><span class="me" id="meText"></span> 님
+        <button type="button" class="linkish" id="changeMe">본인이 아닌가요?</button></p>
+    </div>
+    <div id="profileEdit">
+      <label for="name">이름</label>
+      <input id="name" autocomplete="name" placeholder="홍길동">
+      <label for="phone4">연락처 뒤 4자리</label>
+      <input id="phone4" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="1234">
+      <p class="hint">처음 출석한 휴대폰이 본인 기기로 등록됩니다. 다른 사람 휴대폰으로 대신 출석할 수 없습니다.</p>
+    </div>
+    <div class="gps"><span class="dot" id="gpsDot"></span><span id="gpsText">위치 확인 중… (위치 권한을 허용해 주세요)</span></div>
+    <div class="row" style="margin-top:16px">
+      <button id="btnIn" data-type="출근" disabled>출근</button>
+      <button id="btnOut" data-type="퇴근" disabled>퇴근</button>
+    </div>
+    <p class="hint">QR을 스캔한 뒤 1분 안에 눌러 주세요. 시간이 지나면 부스의 QR을 다시 스캔하면 됩니다.</p>
+    <div id="formMsg" class="msg hidden"></div>
+  </div>
+
+  <!-- 결과 -->
+  <div id="result" class="card result hidden">
+    <div id="resTitle"></div>
+    <div class="big" id="resBig"></div>
+    <div id="resDetail"></div>
+  </div>
+</main>
+
+<script src="config.js"></script>
+<script>
+(function () {
+  'use strict';
+  var API = (window.ATTENDANCE_CONFIG || {}).API_URL;
+  var $ = function (id) { return document.getElementById(id); };
+  var params = new URLSearchParams(location.search);
+  var eventId = params.get('e') || '';
+  var token = params.get('t') || '';
+  var fix = null;   // 최근 GPS 측정값
+
+  // 토큰을 주소창에서 지운다 — 새로고침·즐겨찾기·주소 복사로 재사용하지 못하게.
+  if (token) history.replaceState(null, '', location.pathname + '?e=' + encodeURIComponent(eventId));
+
+  function get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  // 기기 ID: 이 브라우저에서 처음 한 번 만들어 계속 쓴다. 서버가 근무자와 1:1 로 묶는다.
+  function deviceId() {
+    var id = get('attendance.device');
+    if (!id) {
+      id = (crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)),
+        function (b) { return ('0' + b.toString(16)).slice(-2); }).join(''));
+      set('attendance.device', id);
+    }
+    return id;
+  }
+  function profile() { try { return JSON.parse(get('attendance.profile')) || null; } catch (e) { return null; } }
+
+  function showMsg(text, kind) { var m = $('formMsg'); m.textContent = text; m.className = 'msg ' + kind; }
+
+  if (!eventId || !token) { $('noToken').classList.remove('hidden'); return; }
+  if (!API) { $('noToken').classList.remove('hidden'); $('noToken').firstElementChild.textContent = '출석 서버 주소가 설정되지 않았습니다. 담당자에게 문의해 주세요.'; return; }
+  $('form').classList.remove('hidden');
+
+  fetch(API + '?action=event&e=' + encodeURIComponent(eventId)).then(function (r) { return r.json(); }).then(function (d) {
+    if (d.ok) { $('evName').textContent = d.name; $('evSub').textContent = '근무자 출석 확인'; }
+    else showMsg(d.message, 'err');
+  }).catch(function () {});
+
+  // 저장된 본인 정보
+  var me = profile();
+  function renderProfile() {
+    if (me) {
+      $('meText').textContent = me.name + ' (' + me.phone4 + ')';
+      $('profileView').classList.remove('hidden');
+      $('profileEdit').classList.add('hidden');
+    } else {
+      $('profileView').classList.add('hidden');
+      $('profileEdit').classList.remove('hidden');
+    }
+  }
+  renderProfile();
+  $('changeMe').addEventListener('click', function () {
+    $('name').value = me ? me.name : '';
+    $('phone4').value = '';
+    me = null;
+    renderProfile();
+  });
+
+  // GPS — 캐시값을 쓰지 않고(maximumAge 0) 계속 갱신한다.
+  function setGps(kind, text) { $('gpsDot').className = 'dot ' + kind; $('gpsText').textContent = text; }
+  if (!navigator.geolocation) {
+    setGps('err', '이 브라우저는 위치 확인을 지원하지 않습니다.');
+  } else {
+    navigator.geolocation.watchPosition(function (p) {
+      fix = p;
+      var acc = Math.round(p.coords.accuracy);
+      setGps(acc <= 100 ? 'ok' : 'err', acc <= 100 ? '위치 확인됨 (오차 약 ' + acc + 'm)'
+        : '위치 정확도가 낮습니다 (오차 약 ' + acc + 'm) — 와이파이·GPS를 켜 주세요');
+      $('btnIn').disabled = $('btnOut').disabled = false;
+    }, function (e) {
+      setGps('err', e.code === 1 ? '위치 권한이 거부되었습니다. 브라우저 설정에서 위치 권한을 허용한 뒤 QR을 다시 스캔해 주세요.'
+        : '위치를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.');
+    }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
+  }
+
+  function submit(type) {
+    var name = me ? me.name : $('name').value.trim();
+    var phone4 = me ? me.phone4 : $('phone4').value.replace(/\D/g, '');
+    if (!name || phone4.length !== 4) return showMsg('이름과 연락처 뒤 4자리를 입력해 주세요.', 'err');
+    if (!fix) return showMsg('위치 확인이 끝난 뒤 눌러 주세요.', 'err');
+    $('btnIn').disabled = $('btnOut').disabled = true;
+    showMsg('확인 중…', 'info');
+    fetch(API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'checkin', eventId: eventId, token: token, deviceId: deviceId(),
+        name: name, phone4: phone4, type: type,
+        lat: fix.coords.latitude, lng: fix.coords.longitude, accuracy: fix.coords.accuracy,
+        fixTime: fix.timestamp, ua: navigator.userAgent
+      })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.ok) {
+        set('attendance.profile', JSON.stringify({ name: name, phone4: phone4 }));
+        $('form').classList.add('hidden');
+        var res = $('result');
+        res.className = 'card result ok';
+        $('resTitle').textContent = d.event || '';
+        $('resBig').textContent = d.duplicate ? '이미 ' + d.type + ' 처리됨' : d.type + ' 완료';
+        $('resDetail').textContent = d.name + ' 님 · ' + d.time;
+        res.classList.remove('hidden');
+      } else {
+        showMsg(d.message, 'err');
+        $('btnIn').disabled = $('btnOut').disabled = false;
+      }
+    }).catch(function () {
+      showMsg('서버에 연결할 수 없습니다. 인터넷 연결을 확인해 주세요.', 'err');
+      $('btnIn').disabled = $('btnOut').disabled = false;
+    });
+  }
+  $('btnIn').addEventListener('click', function () { submit('출근'); });
+  $('btnOut').addEventListener('click', function () { submit('퇴근'); });
+})();
+</script>
+</body>
+</html>

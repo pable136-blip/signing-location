@@ -1,0 +1,58 @@
+/* QR 출석 화면 공통 — 메인 사이트(assets/style.css)의 천안 블루·Pretendard 를 따른다. */
+:root {
+  --bg: #f5f5f7;
+  --surface: #ffffff;
+  --border: #e0e0e0;
+  --text: #1d1d1f;
+  --text-dim: #6b6b6b;
+  --primary: #2257b4;
+  --primary-dim: #1c4690;
+  --brand-soft: #e9f0fa;
+  --ok: #00863a;
+  --ok-soft: #e6f5ec;
+  --err: #c8370c;
+  --err-soft: #fbeee8;
+  --radius: 16px;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Pretendard Variable", Pretendard, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+.wrap { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 14px;
+}
+h1 { font-size: 1.35rem; margin: 0 0 4px; }
+.sub { color: var(--text-dim); font-size: .9rem; margin: 0; }
+label { display: block; font-weight: 600; font-size: .92rem; margin: 14px 0 6px; }
+input {
+  width: 100%; font: inherit; font-size: 1.05rem;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: #fff;
+}
+input:focus { outline: 2px solid var(--primary); outline-offset: -1px; border-color: transparent; }
+button {
+  font: inherit; font-weight: 700; font-size: 1.05rem;
+  border: 0; border-radius: 12px; padding: 14px 16px; cursor: pointer;
+  background: var(--primary); color: #fff; width: 100%;
+}
+button:hover { background: var(--primary-dim); }
+button:disabled { opacity: .45; cursor: default; }
+button.ghost { background: transparent; color: var(--primary); border: 1px solid var(--border); }
+.row { display: flex; gap: 10px; }
+.row > * { flex: 1; }
+.msg { border-radius: 12px; padding: 14px 16px; margin-top: 14px; font-weight: 600; }
+.msg.ok { background: var(--ok-soft); color: var(--ok); }
+.msg.err { background: var(--err-soft); color: var(--err); }
+.msg.info { background: var(--brand-soft); color: var(--primary-dim); }
+.hint { color: var(--text-dim); font-size: .85rem; margin: 8px 0 0; }
+.hidden { display: none !important; }
