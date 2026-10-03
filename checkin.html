@@ -100,7 +100,7 @@
   if (!API) { $('noToken').classList.remove('hidden'); $('noToken').firstElementChild.textContent = '출석 서버 주소가 설정되지 않았습니다. 담당자에게 문의해 주세요.'; return; }
   $('form').classList.remove('hidden');
 
-  fetch(API + '?action=event&e=' + encodeURIComponent(eventId)).then(function (r) { return r.json(); }).then(function (d) {
+  fetch(API + '?action=event&e=' + encodeURIComponent(eventId) + '&t=' + encodeURIComponent(token)).then(function (r) { return r.json(); }).then(function (d) {
     if (d.ok) { $('evName').textContent = d.name; $('evSub').textContent = '근무자 출석 확인'; }
     else showMsg(d.message, 'err');
   }).catch(function () {});
@@ -156,7 +156,7 @@
         action: 'checkin', eventId: eventId, token: token, deviceId: deviceId(),
         name: name, phone4: phone4, type: type,
         lat: fix.coords.latitude, lng: fix.coords.longitude, accuracy: fix.coords.accuracy,
-        fixTime: fix.timestamp, ua: navigator.userAgent
+        fixTime: fix.timestamp
       })
     }).then(function (r) { return r.json(); }).then(function (d) {
       if (d.ok) {

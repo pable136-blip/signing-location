@@ -14,6 +14,13 @@
  *   4. 행사 기간  — 시작~종료 일시 밖의 출석은 거부.
  * 거부된 시도는 모두 「거부기록」 시트에 사유·거리와 함께 남는다.
  *
+ * 개인정보 보호(외부 유출 방지):
+ *   - 기록은 이 스프레드시트에만 남는다. GitHub 저장소·웹 화면에는 개인정보가 없다.
+ *   - 휴대폰 좌표(위도·경도)는 저장하지 않고 「행사장까지 거리」만 남긴다.
+ *   - 연락처는 뒤 4자리만, 브라우저 정보는 받지 않는다.
+ *   - 웹 API 는 어떤 경우에도 명단·기록을 돌려주지 않는다(본인 출석 결과만).
+ *   - 보존기간(CONFIG.RETENTION_DAYS)이 지난 기록은 메뉴로 일괄 삭제한다.
+ *
  * 설치 방법은 attendance/README.md 참고.
  */
 
@@ -25,6 +32,7 @@ var CONFIG = {
   MAX_ACCURACY_M: 100,   // GPS 오차가 이보다 크면 위치를 믿을 수 없어 거부
   MAX_FIX_AGE_MS: 120000,// 2분보다 오래된 위치값(캐시)은 거부
   DEFAULT_RADIUS_M: 200, // 행사 시트에 반경이 비어 있을 때
+  RETENTION_DAYS: 365,   // 출석·거부 기록 보존기간(일) — 메뉴 「보존기간 지난 기록 삭제」 기준
   TZ: 'Asia/Seoul'
 };
 
@@ -39,16 +47,16 @@ var HEADERS = {};
 HEADERS[SHEET.EVENTS] = ['행사ID', '행사명', '위도', '경도', '허용반경(m)', '시작일시', '종료일시',
                          '사전명단만허용(Y/N)', '부스키', '사용(Y/N)'];
 HEADERS[SHEET.WORKERS] = ['행사ID', '이름', '연락처뒤4자리', '기기ID', '기기등록일시'];
-HEADERS[SHEET.LOG] = ['일시', '행사ID', '이름', '연락처뒤4자리', '구분', '거리(m)', 'GPS오차(m)',
-                      '위도', '경도', '기기ID'];
+HEADERS[SHEET.LOG] = ['일시', '행사ID', '이름', '연락처뒤4자리', '구분', '거리(m)', 'GPS오차(m)'];
 HEADERS[SHEET.REJECT] = ['일시', '행사ID', '이름', '연락처뒤4자리', '구분', '사유', '거리(m)',
-                         'GPS오차(m)', '위도', '경도', '기기ID', '브라우저'];
+                         'GPS오차(m)', '기기ID'];
 
 // ── 시트 메뉴 / 초기 설정 ───────────────────────────────────────────
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('출석관리')
     .addItem('시트 초기 설정', 'setup')
     .addItem('빈 행사ID·부스키 채우기', 'fillEventKeys')
+    .addItem('보존기간 지난 기록 삭제', 'purgeOldRecords')
     .addToUi();
 }
 
@@ -81,15 +89,31 @@ function fillEventKeys() {
     if (!r[1]) return;                       // 행사명이 없는 빈 줄은 건너뜀
     if (!r[0]) r[0] = 'EV' + randomString_(6).toUpperCase();
     if (!r[8]) r[8] = Utilities.getUuid().replace(/-/g, '');   // 122비트 무작위
+    if (!r[7]) r[7] = 'N';                   // 기본: 명단 없이 첫 출석 때 자동 등록
     if (!r[9]) r[9] = 'Y';
   });
   range.setValues(rows);
 }
 
+/** 출석기록·거부기록에서 보존기간(CONFIG.RETENTION_DAYS)이 지난 행을 지운다. */
+function purgeOldRecords() {
+  var cutoff = Utilities.formatDate(new Date(Date.now() - CONFIG.RETENTION_DAYS * 86400000), CONFIG.TZ, 'yyyy-MM-dd');
+  var removed = 0;
+  [SHEET.LOG, SHEET.REJECT].forEach(function (name) {
+    var sh = sheet_(name);
+    var rows = sh.getDataRange().getValues();
+    for (var i = rows.length - 1; i >= 1; i--) {      // 아래에서부터 지워야 행 번호가 밀리지 않는다
+      if (dayOf_(rows[i][0]) < cutoff) { sh.deleteRow(i + 1); removed++; }
+    }
+  });
+  SpreadsheetApp.getUi().alert(cutoff + ' 이전 기록 ' + removed + '건을 삭제했습니다.');
+}
+
 // ── 웹 API ─────────────────────────────────────────────────────────
 /**
  * GET ?action=time            → 서버 시각·QR 주기 (부스 화면 시계 맞춤)
- * GET ?action=event&e=행사ID  → 행사명·사전명단 여부 (출석 화면 표시용, 비밀값 없음)
+ * GET ?action=event&e=행사ID&t=토큰 → 행사명 (출석 화면 표시용). 유효한 QR 토큰이 있어야
+ *                                    답하므로 행사ID만으로 행사명을 알아낼 수 없다.
  */
 function doGet(e) {
   var p = (e && e.parameter) || {};
@@ -98,8 +122,10 @@ function doGet(e) {
   }
   if (p.action === 'event') {
     var ev = findEvent_(p.e);
-    if (!ev || !ev.active) return json_({ ok: false, code: 'NO_EVENT', message: '등록되지 않았거나 종료된 행사입니다.' });
-    return json_({ ok: true, name: ev.name, rosterOnly: ev.rosterOnly });
+    if (!ev || !ev.active || !tokenValid_(ev, p.t, Date.now())) {
+      return json_({ ok: false, code: 'TOKEN_EXPIRED', message: 'QR이 만료되었습니다. 부스 화면의 QR을 다시 스캔해 주세요.' });
+    }
+    return json_({ ok: true, name: ev.name });
   }
   return json_({ ok: false, code: 'BAD_REQUEST', message: '알 수 없는 요청입니다.' });
 }
@@ -107,7 +133,8 @@ function doGet(e) {
 /**
  * POST (본문은 JSON 문자열, Content-Type: text/plain — CORS 사전요청을 피하기 위함)
  *   {action:'boothcheck', eventId, token}  부스 화면이 부스키를 맞게 넣었는지 확인
- *   {action:'checkin', eventId, token, deviceId, name, phone4, type, lat, lng, accuracy, fixTime, ua}
+ *   {action:'checkin', eventId, token, deviceId, name, phone4, type, lat, lng, accuracy, fixTime}
+ *   위도·경도는 거리 계산에만 쓰고 저장하지 않는다.
  */
 function doPost(e) {
   var req;
@@ -187,7 +214,7 @@ function checkin_(req) {
     if (String(rows[i][3]) === deviceId) deviceOwner = i;
   }
   if (deviceOwner !== -1 && deviceOwner !== me) {
-    return reject_(ctx, 'DEVICE_OTHER_WORKER', '이 휴대폰은 이미 다른 근무자(' + rows[deviceOwner][1] + ')로 등록되어 있습니다. 본인 휴대폰으로 출석해 주세요.');
+    return reject_(ctx, 'DEVICE_OTHER_WORKER', '이 휴대폰은 이미 다른 근무자로 등록되어 있습니다. 본인 휴대폰으로 출석해 주세요.');
   }
   if (me === -1) {
     if (ev.rosterOnly) return reject_(ctx, 'NOT_IN_ROSTER', '근무자 명단에 없습니다. 이름·연락처 뒤 4자리를 확인하거나 담당자에게 문의해 주세요.');
@@ -209,7 +236,7 @@ function checkin_(req) {
                event: ev.name, name: name, type: type, time: timeOf_(r[0]) };
     }
   }
-  log.appendRow([stamp_(now), ev.id, name, "'" + phone4, type, ctx.dist, Math.round(acc), lat, lng, deviceId]);
+  log.appendRow([stamp_(now), ev.id, name, "'" + phone4, type, ctx.dist, Math.round(acc)]);
   return { ok: true, message: type + ' 완료', event: ev.name, name: name, type: type,
            time: Utilities.formatDate(new Date(now), CONFIG.TZ, 'HH:mm:ss'), distance: ctx.dist };
 }
@@ -259,13 +286,14 @@ function findEvent_(id) {
 
 function reject_(ctx, code, message) {
   try {
-    var req = ctx.req || {};
-    sheet_(SHEET.REJECT).appendRow([
-      stamp_(Date.now()), ctx.eventId || String(req.eventId || ''), ctx.name || '', "'" + (ctx.phone4 || ''),
-      ctx.type || '', code + ' ' + message, ctx.dist,
-      isFinite(ctx.acc) ? Math.round(ctx.acc) : '', isFinite(ctx.lat) ? ctx.lat : '',
-      isFinite(ctx.lng) ? ctx.lng : '', ctx.deviceId || '', String(req.ua || '').substring(0, 200)
-    ]);
+    // 없는 행사ID 로 들어온 요청은 기록하지 않는다(외부에서 시트를 채우는 장난 방지).
+    if (ctx.eventId) {
+      sheet_(SHEET.REJECT).appendRow([
+        stamp_(Date.now()), ctx.eventId, String(ctx.name || '').substring(0, 30), "'" + (ctx.phone4 || '').substring(0, 4),
+        ctx.type || '', code + ' ' + message, ctx.dist,
+        isFinite(ctx.acc) ? Math.round(ctx.acc) : '', String(ctx.deviceId || '').substring(0, 64)
+      ]);
+    }
   } catch (err) { /* 기록 실패가 응답을 막지 않도록 */ }
   return { ok: false, code: code, message: message };
 }
