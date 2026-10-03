@@ -66,18 +66,21 @@
 </main>
 
 <script src="config.js"></script>
+<script src="api.js"></script>
 <script>
 (function () {
   'use strict';
-  var API = (window.ATTENDANCE_CONFIG || {}).API_URL;
   var $ = function (id) { return document.getElementById(id); };
   var params = new URLSearchParams(location.search);
+  // 서버: 부서 공용 주소(config.js)가 있으면 그것, 없으면 QR 에 실린 배포 ID(script.google.com 으로만 연결)
+  var API = (window.ATTENDANCE_CONFIG || {}).API_URL || AttendanceApi.urlFromId(params.get('a'));
   var eventId = params.get('e') || '';
   var token = params.get('t') || '';
   var fix = null;   // 최근 GPS 측정값
 
   // 토큰을 주소창에서 지운다 — 새로고침·즐겨찾기·주소 복사로 재사용하지 못하게.
-  if (token) history.replaceState(null, '', location.pathname + '?e=' + encodeURIComponent(eventId));
+  if (token) history.replaceState(null, '', location.pathname + '?e=' + encodeURIComponent(eventId) +
+    (params.get('a') ? '&a=' + encodeURIComponent(params.get('a')) : ''));
 
   function get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }

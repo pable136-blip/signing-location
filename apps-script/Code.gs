@@ -53,7 +53,12 @@ HEADERS[SHEET.REJECT] = ['일시', '행사ID', '이름', '연락처뒤4자리', 
 
 // ── 시트 메뉴 / 초기 설정 ───────────────────────────────────────────
 function onOpen() {
+  // 코드를 붙여 넣고 시트를 새로 열기만 해도 필요한 탭이 생기도록
+  try { if (!SpreadsheetApp.getActive().getSheetByName(SHEET.EVENTS)) setup(); } catch (err) {}
   SpreadsheetApp.getUi().createMenu('출석관리')
+    .addItem('새 행사 만들기', 'newEvent')
+    .addItem('선택한 근무자 기기 초기화', 'resetDevice')
+    .addSeparator()
     .addItem('시트 초기 설정', 'setup')
     .addItem('빈 행사ID·부스키 채우기', 'fillEventKeys')
     .addItem('보존기간 지난 기록 삭제', 'purgeOldRecords')
@@ -95,6 +100,48 @@ function fillEventKeys() {
   range.setValues(rows);
 }
 
+/** 메뉴: 행사명·날짜만 물어 행사를 만들고 행사ID·부스키를 보여 준다. 위치는 부스 화면에서 등록. */
+function newEvent() {
+  var ui = SpreadsheetApp.getUi();
+  var r1 = ui.prompt('새 행사 만들기 (1/2)', '행사명', ui.ButtonSet.OK_CANCEL);
+  if (r1.getSelectedButton() !== ui.Button.OK || !r1.getResponseText().trim()) return;
+  var r2 = ui.prompt('새 행사 만들기 (2/2)',
+    '행사 날짜 — 예: 2026-10-10  또는 기간 2026-10-10~2026-10-12\n(비워 두면 날짜 제한 없음)', ui.ButtonSet.OK_CANCEL);
+  if (r2.getSelectedButton() !== ui.Button.OK) return;
+  var days = r2.getResponseText().replace(/\s/g, '').split('~').filter(String);
+  if (days.some(function (d) { return !/^\d{4}-\d{2}-\d{2}$/.test(d); })) {
+    ui.alert('날짜 형식이 맞지 않습니다. 예: 2026-10-10');
+    return;
+  }
+  var start = days[0] ? days[0] + ' 00:00' : '';
+  var end = days.length ? days[days.length - 1] + ' 23:59' : '';
+  var sh = sheet_(SHEET.EVENTS);
+  sh.appendRow(['', r1.getResponseText().trim(), '', '', CONFIG.DEFAULT_RADIUS_M, start, end, 'N', '', 'Y']);
+  fillEventKeys();
+  var row = sh.getRange(sh.getLastRow(), 1, 1, 9).getValues()[0];
+  ui.alert('행사를 만들었습니다',
+    '행사ID: ' + row[0] + '\n부스키: ' + row[8] + '\n\n' +
+    '1) 행사장 부스 태블릿에서 부스 화면(booth.html)을 열고 위 두 값을 입력하세요.\n' +
+    '2) 부스 자리에서 「이 자리를 행사장 위치로 등록」 을 한 번 누르세요.\n' +
+    '   (위치를 등록하기 전에는 거리 확인 없이 출석됩니다)\n\n부스키는 근무자에게 알려 주지 마세요.',
+    ui.ButtonSet.OK);
+}
+
+/** 메뉴: 「근무자」 시트에서 선택한 줄의 기기 등록을 지운다(휴대폰 교체·브라우저 초기화 시). */
+function resetDevice() {
+  var ui = SpreadsheetApp.getUi();
+  var sh = SpreadsheetApp.getActiveSheet();
+  var range = sh.getActiveRange();
+  if (sh.getName() !== SHEET.WORKERS || !range || range.getRow() < 2) {
+    ui.alert('「근무자」 시트에서 초기화할 사람의 줄을 선택한 뒤 다시 실행하세요.');
+    return;
+  }
+  var names = sh.getRange(range.getRow(), 2, range.getNumRows(), 1).getValues().map(function (r) { return r[0]; });
+  if (ui.alert('기기 초기화', names.join(', ') + ' — 다음 출석하는 휴대폰으로 다시 고정됩니다. 진행할까요?',
+               ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+  sh.getRange(range.getRow(), 4, range.getNumRows(), 2).clearContent();
+}
+
 /** 출석기록·거부기록에서 보존기간(CONFIG.RETENTION_DAYS)이 지난 행을 지운다. */
 function purgeOldRecords() {
   var cutoff = Utilities.formatDate(new Date(Date.now() - CONFIG.RETENTION_DAYS * 86400000), CONFIG.TZ, 'yyyy-MM-dd');
@@ -127,12 +174,15 @@ function doGet(e) {
     }
     return json_({ ok: true, name: ev.name });
   }
-  return json_({ ok: false, code: 'BAD_REQUEST', message: '알 수 없는 요청입니다.' });
+  // 주소만 열면 설치 확인용 응답(부스 화면이 서버 주소가 맞는지 확인할 때 씀)
+  return json_({ ok: true, service: 'qr-attendance' });
 }
 
 /**
  * POST (본문은 JSON 문자열, Content-Type: text/plain — CORS 사전요청을 피하기 위함)
  *   {action:'boothcheck', eventId, token}  부스 화면이 부스키를 맞게 넣었는지 확인
+ *   {action:'setlocation', eventId, token, lat, lng, accuracy}  부스 자리를 행사장 위치로 등록
+ *     — 부스키로 만든 토큰이 있어야 하므로 부스키를 가진 담당자만 할 수 있다.
  *   {action:'checkin', eventId, token, deviceId, name, phone4, type, lat, lng, accuracy, fixTime}
  *   위도·경도는 거리 계산에만 쓰고 저장하지 않는다.
  */
@@ -144,6 +194,7 @@ function doPost(e) {
     return json_({ ok: false, code: 'BAD_REQUEST', message: '요청 형식이 올바르지 않습니다.' });
   }
   if (req.action === 'boothcheck') return json_(boothCheck_(req));
+  if (req.action === 'setlocation') return json_(setLocation_(req));
   if (req.action === 'checkin') {
     var lock = LockService.getScriptLock();
     lock.waitLock(20000);                    // 동시 출석 시 기기 등록이 꼬이지 않도록 직렬화
@@ -161,6 +212,21 @@ function boothCheck_(req) {
   if (!ev || !ev.active) return { ok: false, code: 'NO_EVENT', message: '행사ID를 찾을 수 없거나 사용(Y)이 아닙니다.' };
   if (!tokenValid_(ev, req.token, Date.now())) return { ok: false, code: 'BAD_KEY', message: '부스키가 맞지 않습니다.' };
   return { ok: true, name: ev.name, slotSeconds: CONFIG.SLOT_SECONDS };
+}
+
+function setLocation_(req) {
+  var ev = findEvent_(req.eventId);
+  if (!ev || !ev.active) return { ok: false, code: 'NO_EVENT', message: '행사ID를 찾을 수 없거나 사용(Y)이 아닙니다.' };
+  if (!tokenValid_(ev, req.token, Date.now())) return { ok: false, code: 'BAD_KEY', message: '부스키가 맞지 않습니다.' };
+  var lat = Number(req.lat), lng = Number(req.lng), acc = Number(req.accuracy);
+  if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    return { ok: false, code: 'NO_GPS', message: '위치를 확인할 수 없습니다.' };
+  }
+  if (!isFinite(acc) || acc > CONFIG.MAX_ACCURACY_M) {
+    return { ok: false, code: 'LOW_ACCURACY', message: '위치 정확도가 낮습니다(오차 ' + Math.round(acc) + 'm). 와이파이·GPS를 켜고 다시 눌러 주세요.' };
+  }
+  sheet_(SHEET.EVENTS).getRange(ev.row, 3, 1, 2).setValues([[lat, lng]]);
+  return { ok: true, radius: ev.radius, accuracy: Math.round(acc) };
 }
 
 function checkin_(req) {
@@ -269,6 +335,7 @@ function findEvent_(id) {
     var r = rows[i];
     if (String(r[0]).trim() !== id) continue;
     return {
+      row: i + 1,
       id: id,
       name: String(r[1]),
       lat: r[2] === '' ? NaN : Number(r[2]),

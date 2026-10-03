@@ -23,7 +23,6 @@
   #net.bad { color: var(--err); font-weight: 700; }
   #settings { position: fixed; right: 12px; bottom: 12px; width: auto; padding: 8px 12px;
               font-size: .85rem; opacity: .5; }
-  code { background: var(--brand-soft); padding: 2px 6px; border-radius: 6px; word-break: break-all; }
 </style>
 </head>
 <body>
@@ -32,7 +31,12 @@
 <main id="setup" class="wrap">
   <div class="card">
     <h1>출석 QR 부스 설정</h1>
-    <p class="sub">행사장 부스에 둘 태블릿·노트북에서 여는 화면입니다. 구글 시트 「행사」 탭의 값을 넣으세요.</p>
+    <p class="sub">행사장 부스에 둘 태블릿·노트북에서 여는 화면입니다. 구글 시트 메뉴 「출석관리 → 새 행사 만들기」 에서 받은 값을 넣으세요.</p>
+    <div id="apiBox">
+      <label for="apiUrl">서버 주소 (웹 앱 URL)</label>
+      <input id="apiUrl" autocomplete="off" inputmode="url" placeholder="https://script.google.com/macros/s/.../exec">
+      <p class="hint">Apps Script 「배포」 때 받은 주소. 한 번 넣으면 이 기기에 저장됩니다.</p>
+    </div>
     <label for="eventId">행사ID</label>
     <input id="eventId" autocomplete="off" placeholder="예: EVAB12CD">
     <label for="secret">부스키</label>
@@ -42,10 +46,11 @@
     <div id="setupMsg" class="msg hidden"></div>
   </div>
   <div class="card">
-    <h1 style="font-size:1.05rem">행사장 좌표 확인</h1>
-    <p class="sub">부스 자리에서 누르면 이 기기의 GPS 좌표가 나옵니다. 시트의 위도·경도 칸에 붙여 넣으세요.</p>
-    <div style="margin-top:12px"><button id="locBtn" class="ghost">이 자리 좌표 보기</button></div>
-    <p id="locOut" class="hint"></p>
+    <h1 style="font-size:1.05rem">행사장 위치 등록</h1>
+    <p class="sub">행사 당일 <b>부스 자리에서</b> 한 번 누르세요. 이 기기의 GPS 위치가 행사장 위치로 저장되고,
+      그 반경(기본 200m) 밖에서는 출석되지 않습니다. 위에 서버 주소·행사ID·부스키를 먼저 넣어야 합니다.</p>
+    <div style="margin-top:12px"><button id="locBtn" class="ghost">이 자리를 행사장 위치로 등록</button></div>
+    <div id="locMsg" class="msg hidden"></div>
   </div>
 </main>
 
@@ -63,10 +68,13 @@
 
 <script src="vendor/qrcode.js"></script>
 <script src="config.js"></script>
+<script src="api.js"></script>
 <script>
 (function () {
   'use strict';
-  var API = (window.ATTENDANCE_CONFIG || {}).API_URL;
+  // config.js 에 부서 공용 주소가 있으면 그것을, 없으면 담당자가 입력한 주소를 쓴다.
+  var FIXED_API = (window.ATTENDANCE_CONFIG || {}).API_URL;
+  var API = FIXED_API;
   var KEY = 'attendance.booth';
   var $ = function (id) { return document.getElementById(id); };
   var state = { eventId: '', secret: '', name: '', slotSeconds: 30, offset: 0, lastSlot: null, timer: null, syncTimer: null };
@@ -123,7 +131,8 @@
     state.lastSlot = slot;
     makeToken(state.secret, state.eventId, slot).then(function (token) {
       var url = new URL('checkin.html', location.href);
-      url.search = '?e=' + encodeURIComponent(state.eventId) + '&t=' + token;
+      url.search = '?e=' + encodeURIComponent(state.eventId) + '&t=' + token +
+        (FIXED_API ? '' : '&a=' + AttendanceApi.idFromUrl(API));
       var qr = qrcode(0, 'M');
       qr.addData(url.href);
       qr.make();
@@ -154,35 +163,77 @@
     keepAwake();
   }
 
-  function start() {
-    var out = $('setupMsg');
-    if (!API) return msg(out, 'config.js 의 API_URL 이 비어 있습니다. README 3단계를 먼저 하세요.', 'err');
-    if (!window.isSecureContext || !window.crypto || !crypto.subtle) {
-      return msg(out, 'https 주소(또는 localhost)에서 열어야 합니다.', 'err');
+  // 입력값을 읽어 state 에 넣는다. 문제가 있으면 안내 문구를, 없으면 '' 를 돌려준다.
+  function readInputs() {
+    if (!window.isSecureContext || !window.crypto || !crypto.subtle) return 'https 주소에서 열어야 합니다.';
+    if (!FIXED_API) {
+      var id = AttendanceApi.idFromUrl($('apiUrl').value);
+      if (!id) return '서버 주소가 올바르지 않습니다. https://script.google.com/… /exec 형태의 웹 앱 URL 을 넣으세요.';
+      API = AttendanceApi.urlFromId(id);
     }
     state.eventId = $('eventId').value.trim();
     state.secret = $('secret').value.trim();
-    if (!state.eventId || !state.secret) return msg(out, '행사ID와 부스키를 입력하세요.', 'err');
-    msg(out, '확인 중…', 'info');
-    $('start').disabled = true;
-    syncTime().then(function () {
+    if (!state.eventId || !state.secret) return '행사ID와 부스키를 입력하세요.';
+    return '';
+  }
+
+  // 부스키로 현재 토큰을 만들어 서버에 요청한다(부스키를 가진 담당자만 할 수 있는 요청).
+  function signedPost(body) {
+    return syncTime().then(function () {
       var slot = Math.floor(serverNow() / 1000 / state.slotSeconds);
       return makeToken(state.secret, state.eventId, slot);
     }).then(function (token) {
+      body.eventId = state.eventId;
+      body.token = token;
       return fetch(API, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'boothcheck', eventId: state.eventId, token: token })
+        body: JSON.stringify(body)
       }).then(function (r) { return r.json(); });
-    }).then(function (d) {
+    });
+  }
+
+  function saveInputs() {
+    store({ api: FIXED_API ? '' : $('apiUrl').value.trim(), eventId: state.eventId, secret: state.secret });
+  }
+
+  function start() {
+    var out = $('setupMsg');
+    var err = readInputs();
+    if (err) return msg(out, err, 'err');
+    msg(out, '확인 중…', 'info');
+    $('start').disabled = true;
+    signedPost({ action: 'boothcheck' }).then(function (d) {
       if (!d.ok) throw new Error(d.message);
       state.name = d.name;
       state.slotSeconds = d.slotSeconds || state.slotSeconds;
-      store({ eventId: state.eventId, secret: state.secret });
+      saveInputs();
       showQr();
     }).catch(function (e) {
-      msg(out, e.message || '서버에 연결할 수 없습니다.', 'err');
+      msg(out, e instanceof TypeError ? '서버에 연결할 수 없습니다. 서버 주소와 배포 설정(액세스: 모든 사용자)을 확인하세요.'
+        : e.message, 'err');
     }).then(function () { $('start').disabled = false; });
+  }
+
+  function registerLocation() {
+    var out = $('locMsg');
+    var err = readInputs();
+    if (err) return msg(out, err, 'err');
+    if (!confirm('지금 이 기기가 있는 자리를 「행사장 위치」로 저장할까요?\n반드시 행사장 부스에서 누르세요.')) return;
+    msg(out, '위치 확인 중… (실외·창가에서 더 정확합니다)', 'info');
+    $('locBtn').disabled = true;
+    new Promise(function (resolve, reject) {
+      navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 });
+    }).then(function (p) {
+      return signedPost({ action: 'setlocation', lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy });
+    }).then(function (d) {
+      if (!d.ok) throw new Error(d.message);
+      saveInputs();
+      msg(out, '행사장 위치를 등록했습니다(오차 약 ' + d.accuracy + 'm). 이제 반경 ' + d.radius + 'm 안에서만 출석됩니다.', 'ok');
+    }).catch(function (e) {
+      msg(out, e && e.code === 1 ? '위치 권한이 거부되었습니다. 브라우저 설정에서 허용해 주세요.'
+        : e instanceof TypeError ? '서버에 연결할 수 없습니다.' : (e.message || '위치를 확인할 수 없습니다.'), 'err');
+    }).then(function () { $('locBtn').disabled = false; });
   }
 
   $('start').addEventListener('click', start);
@@ -193,18 +244,13 @@
     if (wakeLock) wakeLock.release().catch(function () {});
     $('show').classList.add('hidden');
     $('setup').classList.remove('hidden');
+    $('setupMsg').className = 'msg hidden';
   });
-  $('locBtn').addEventListener('click', function () {
-    var out = $('locOut');
-    out.textContent = '위치 확인 중…';
-    navigator.geolocation.getCurrentPosition(function (p) {
-      out.innerHTML = '위도 <code>' + p.coords.latitude.toFixed(6) + '</code> 경도 <code>' +
-        p.coords.longitude.toFixed(6) + '</code> (오차 약 ' + Math.round(p.coords.accuracy) + 'm)';
-    }, function (e) { out.textContent = '위치를 가져오지 못했습니다: ' + e.message; },
-    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
-  });
+  $('locBtn').addEventListener('click', registerLocation);
 
+  if (FIXED_API) $('apiBox').classList.add('hidden');
   var saved = load();
+  if (saved.api) $('apiUrl').value = saved.api;
   if (saved.eventId) $('eventId').value = saved.eventId;
   if (saved.secret) $('secret').value = saved.secret;
 })();

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>QR 근무자 출석</title>
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="common.css">
+<style>
+  .wrap { max-width: 760px; }
+  h2 { font-size: 1.1rem; margin: 0 0 10px; }
+  ol, ul { margin: 0; padding-left: 1.3em; }
+  li { margin: 6px 0; }
+  li ul { margin-top: 4px; }
+  .lead { font-size: 1.02rem; margin: 10px 0 0; }
+  .btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .btns > * { flex: 1 1 200px; }
+  a.button { display: block; text-align: center; text-decoration: none; font-weight: 700; border-radius: 12px;
+             padding: 14px 16px; background: var(--primary); color: #fff; }
+  a.button:hover { background: var(--primary-dim); }
+  a.button.ghost { background: transparent; color: var(--primary); border: 1px solid var(--border); }
+  .step { display: inline-block; min-width: 1.6em; font-weight: 800; color: var(--primary); }
+  kbd { font-family: inherit; font-size: .88em; background: var(--brand-soft); color: var(--primary-dim);
+        padding: 1px 6px; border-radius: 6px; white-space: nowrap; }
+  td kbd, li kbd { white-space: normal; }
+  .warn { border-left: 4px solid var(--err); }
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { white-space: nowrap; color: var(--text-dim); font-weight: 600; }
+</style>
+</head>
+<body>
+<main class="wrap">
+
+  <div class="card">
+    <h1>행사 근무자 QR 출석</h1>
+    <p class="sub">종이 서명부 대신 — 부스 태블릿에 QR을 띄우고 근무자는 휴대폰으로 출근·퇴근</p>
+    <p class="lead">각 담당자가 <b>본인 구글 시트</b>로 운영합니다. 다른 담당자의 근무자 명단·기록은 서로 볼 수 없고,
+      기록은 그 시트에만 남습니다. 비용·서버·프로그램 설치가 필요 없습니다.</p>
+    <div class="btns">
+      <a class="button" href="booth.html">부스 화면 열기</a>
+      <a class="button ghost" href="#install">처음 설치 방법</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>QR 사진으로 다른 곳에서 출석하는 것을 막는 방법</h2>
+    <table>
+      <tr><th>QR 사진·캡처 공유</th><td>QR이 30초마다 바뀌고 약 1분 뒤 만료</td></tr>
+      <tr><th>멀리서 출석</th><td>출석 순간 휴대폰 위치가 행사장 반경(기본 200m) 밖이면 거부</td></tr>
+      <tr><th>대리출석</th><td>근무자 1명 = 휴대폰 1대. 남의 폰으로, 또는 한 폰으로 여러 명 출석 불가</td></tr>
+      <tr><th>행사일 외 출석</th><td>행사 날짜가 아니면 거부</td></tr>
+    </table>
+    <p class="hint">거부된 시도는 시트 「거부기록」 탭에 사유·거리와 함께 남습니다.</p>
+  </div>
+
+  <div class="card" id="install">
+    <h2>처음 설치 (담당자당 한 번, 약 5분)</h2>
+    <ol>
+      <li>구글에 로그인한 뒤 <a href="https://sheets.new" target="_blank" rel="noopener">새 스프레드시트</a>를 만들고 이름을 정합니다(예: <kbd>OO과 행사 출석</kbd>).</li>
+      <li>시트 메뉴 <kbd>확장 프로그램</kbd> → <kbd>Apps Script</kbd>를 엽니다.</li>
+      <li>아래 버튼으로 서버 코드를 복사해, 편집기의 기존 내용을 모두 지우고 붙여 넣은 뒤 저장(<kbd>Ctrl+S</kbd>)합니다.
+        <div class="btns" style="margin-top:8px">
+          <button id="copyCode" type="button">서버 코드 복사</button>
+          <a class="button ghost" href="apps-script/Code.gs" download="Code.gs">파일로 받기</a>
+        </div>
+        <div id="copyMsg" class="msg hidden"></div>
+      </li>
+      <li>편집기 오른쪽 위 <kbd>배포</kbd> → <kbd>새 배포</kbd> → 톱니바퀴에서 <kbd>웹 앱</kbd> 선택
+        <ul>
+          <li>다음 사용자 인증 정보로 실행: <b>나</b></li>
+          <li>액세스 권한이 있는 사용자: <b>모든 사용자</b> <span class="hint">(출석 요청을 받기 위한 것이며, 시트 열람 권한이 아닙니다)</span></li>
+        </ul>
+        <kbd>배포</kbd>를 누르고 권한을 허용합니다. "확인되지 않은 앱" 경고가 나오면 <kbd>고급</kbd> → <kbd>이동</kbd>(본인이 만든 코드라 정상).</li>
+      <li>나온 <b>웹 앱 URL</b>을 복사해 둡니다. 부스 화면의 「서버 주소」 칸에 넣는 값입니다.</li>
+      <li>시트 탭으로 돌아가 <b>새로고침</b>하면 상단에 <kbd>출석관리</kbd> 메뉴와 「행사·근무자·출석기록·거부기록」 탭이 생깁니다.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>행사마다</h2>
+    <ol>
+      <li>시트 메뉴 <kbd>출석관리</kbd> → <kbd>새 행사 만들기</kbd> — 행사명·날짜를 넣으면 <b>행사ID·부스키</b>가 나옵니다.</li>
+      <li>행사장 부스 태블릿에서 <a href="booth.html">부스 화면</a>을 열고 서버 주소·행사ID·부스키 입력.</li>
+      <li>부스 자리에서 <kbd>이 자리를 행사장 위치로 등록</kbd>을 한 번 누릅니다.</li>
+      <li><kbd>QR 띄우기</kbd> — 근무자는 휴대폰 기본 카메라로 찍고 이름·연락처 뒤 4자리 입력 후 출근/퇴근.
+        명단을 미리 넣을 필요는 없습니다(처음 출석할 때 자동 등록).</li>
+      <li>출석 현황은 시트 <kbd>출석기록</kbd> 탭에서 실시간으로 봅니다.</li>
+    </ol>
+    <p class="hint">반경을 바꾸려면 「행사」 탭의 허용반경(m) 칸을 고칩니다(실내·대형 행사장은 300m 권장).
+      명단에 있는 사람만 받으려면 사전명단만허용을 Y로 바꾸고 「근무자」 탭에 행사ID·이름·연락처 뒤 4자리를 넣습니다.</p>
+  </div>
+
+  <div class="card warn">
+    <h2>개인정보 보호 수칙</h2>
+    <ul>
+      <li>스프레드시트 공유는 <b>「제한됨」</b> 유지 — 「링크가 있는 모든 사용자」로 바꾸지 마세요. 필요한 담당자만 이메일로 공유.</li>
+      <li><b>부스키</b>는 근무자·단톡방에 알려 주지 마세요. 유출이 의심되면 「행사」 탭의 부스키 칸을 지우고
+        메뉴 <kbd>빈 행사ID·부스키 채우기</kbd>로 새로 만든 뒤 부스 화면에 다시 입력합니다.</li>
+      <li>휴대폰 위치 좌표는 저장하지 않고 행사장까지의 거리만 남깁니다. 연락처는 뒤 4자리만 받습니다.</li>
+      <li>행사가 끝나고 필요 기간이 지나면 메뉴 <kbd>보존기간 지난 기록 삭제</kbd>(기본 1년)를 실행하세요.</li>
+      <li>기관 지침상 실명을 외부 클라우드에 둘 수 없다면, 이름 칸에 <b>근무자 번호</b>(예: A017)를 쓰게 하고
+        번호↔실명 대응표는 내부에만 보관하세요.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>자주 묻는 것</h2>
+    <table>
+      <tr><th>"QR이 만료되었습니다"</th><td>스캔 후 1분이 지났습니다. 부스 QR을 다시 찍으면 됩니다.</td></tr>
+      <tr><th>"처음 출석한 휴대폰이 아닙니다"</th><td>폰을 바꿨거나 브라우저 기록을 지운 경우. 「근무자」 탭에서 그 사람 줄을 선택하고 메뉴 <kbd>선택한 근무자 기기 초기화</kbd>.</td></tr>
+      <tr><th>"위치 정확도가 낮습니다"</th><td>휴대폰의 와이파이와 위치(GPS)를 켜고 다시 시도. 지하·실내 깊은 곳이면 반경을 넓히세요.</td></tr>
+      <tr><th>카카오톡에서 열림</th><td>휴대폰 <b>기본 카메라 앱</b>으로 찍으면 크롬·사파리로 열립니다.</td></tr>
+      <tr><th>서버 코드를 고쳤을 때</th><td><kbd>배포</kbd> → <kbd>배포 관리</kbd> → 연필 → 버전 <kbd>새 버전</kbd> → 배포. (웹 앱 URL은 그대로)</td></tr>
+    </table>
+  </div>
+
+</main>
+<script>
+document.getElementById('copyCode').addEventListener('click', function () {
+  var out = document.getElementById('copyMsg');
+  fetch('apps-script/Code.gs', { cache: 'no-store' }).then(function (r) {
+    if (!r.ok) throw new Error();
+    return r.text();
+  }).then(function (code) {
+    return navigator.clipboard.writeText(code);
+  }).then(function () {
+    out.textContent = '복사했습니다. Apps Script 편집기에 붙여 넣으세요(Ctrl+V).';
+    out.className = 'msg ok';
+  }).catch(function () {
+    out.textContent = '복사하지 못했습니다. 「파일로 받기」로 내려받아 내용을 붙여 넣으세요.';
+    out.className = 'msg err';
+  });
+});
+</script>
+</body>
+</html>
